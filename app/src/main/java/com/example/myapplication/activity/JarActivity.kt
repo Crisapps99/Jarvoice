@@ -18,47 +18,14 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.example.myapplication.R
 import com.example.myapplication.databinding.ActivityJarBinding
+import com.example.myapplication.activity.ActionExecutor
+import com.example.myapplication.handlers.IntentHandler
 import java.util.*
-// 💥 NUEVAS IMPORTACIONES PARA LA LLAMADA A LA API
-import retrofit2.Retrofit
+import com.example.myapplication.api.RetrofitClient
+import com.example.myapplication.api.ActionApiService
+import com.example.myapplication.api.ActionRequest
+import com.google.ai.client.generativeai.GenerativeModel
 import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.POST
-import retrofit2.http.Body
-import com.google.gson.annotations.SerializedName
-
-// =========== 1. DEFINICIÓN DE LA API Y MODELOS DE DATOS ===========
-
-// 🚨 La URL de tu servidor ngrok.
-private const val BASE_URL = "https://beata-unweakening-echo.ngrok-free.dev/"
-
-/**
- * Define la estructura del cuerpo JSON que envías a tu API.
- * Asumimos que tu API espera un campo llamado 'query' con la transcripción de voz.
- */
-// 2. O asume que tu servidor Python espera el campo "prompt"
-// 3. Si tu servidor Python espera "query", la estructura original es correcta:
-data class ActionRequest(val texto: String)
-/**
- * Define la estructura de la respuesta JSON que recibes de tu API.
- * Asumimos que tu API devuelve un campo 'action' (ej: "abrir_camara")
- * y 'response_text' (la respuesta que debe hablar).
- */
-data class ActionResponse(
-    @SerializedName("action") val action: String,
-    @SerializedName("response_text") val responseText: String? = null // Opcional: para la respuesta de voz
-)
-
-/**
- * Interfaz de Retrofit para definir el endpoint de tu red neuronal.
- * Asumimos que el endpoint es la raíz de la URL o '/predict'.
- */
-interface ActionApiService {
-    @POST("predecir") // Asumiendo que el endpoint de predicción es la URL base
-    suspend fun predictAction(@Body request: ActionRequest): ActionResponse
-
-    // Si tu endpoint es '/predict', la anotación sería @POST("/predict")
-}
-
 
 class JarActivity : AppCompatActivity(), RecognitionListener {
 
@@ -66,37 +33,22 @@ class JarActivity : AppCompatActivity(), RecognitionListener {
     private lateinit var speechRecognizer: SpeechRecognizer
     private lateinit var recognizerIntent: Intent
     private var isListener = false
-    // private lateinit var generativeModel: GenerativeModel // Comentamos Gemini
+    private lateinit var generativeModel: GenerativeModel // Comentamos Gemini
     private lateinit var textToSpeech: TextToSpeech
-
-    // 💥 Cliente Retrofit
-    private lateinit var actionApiService: ActionApiService
+    private val actionApiService: ActionApiService = RetrofitClient.actionApiService
 
     private val RECORD_AUDIO_PERMISSION_CODE = 200
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 🚨 COMENTAMOS INICIALIZACIÓN DE GEMINI
-        /*
         generativeModel = GenerativeModel(
             modelName = "gemini-2.5-flash",
             apiKey = "AIzaSyCZp4qdhQkid8b_0UfteuvM2erkpUPJxTs"
         )
-        */
-
-        // 💥 INICIALIZACIÓN DE RETROFIT
-        actionApiService = Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(ActionApiService::class.java)
-
 
         binding = ActivityJarBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
-        //... [Resto del onCreate igual] ...
         //permiso del microfono
         requestAudioPermission()
 
@@ -207,55 +159,42 @@ class JarActivity : AppCompatActivity(), RecognitionListener {
         }
     }
 
-
-    // =========== 3. NUEVA LÓGICA DE INTERACCIÓN CON TU RED NEURONAL ===========
-
-    /**
-     * Función que ejecuta una acción de Android basada en la predicción de la API.
-     * @param actionCode El código de acción devuelto por la red neuronal (ej: "abrir_camara").
-     */
-    private fun executeAndroidAction(actionCode: String): String {
-        return when (actionCode.trim().lowercase()) {
-            "abrir_camara" -> {
-                // Aquí deberías poner la lógica para abrir la cámara.
-                // Intent(MediaStore.ACTION_IMAGE_CAPTURE).also { startActivity(it) }
-                "Cámara abierta exitosamente."
-            }
-            "abrir_mapa" -> {
-                // Aquí iría la lógica para abrir el mapa.
-                // Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0")).also { startActivity(it) }
-                "Mapa abierto exitosamente."
-            }
-            // Agrega más comandos de tu red neuronal aquí
-            else -> "No se reconoció una acción válida para ejecutar."
-        }
-    }
-
     private fun IniciarInteraccionNeurona(prompt: String){
         binding.transcriptionTextView.text="Pensando en tu comando..."
 
         //ejecutamos la llamada a la api en un hilo de coroutine
         lifecycleScope.launch {
             try {
-                // 💥 LLAMADA A TU API NGORK
+
                 val apiResponse = actionApiService.predictAction(ActionRequest(prompt))
+                val predictedAction = apiResponse.action ?: "UNKNOWN_ACTION"
 
-                val predictedAction = apiResponse.action
-                val responseText = apiResponse.responseText ?: "Comando reconocido."
 
-                // 2. Ejecutar la acción de Android localmente
-                val executionResult = executeAndroidAction(predictedAction)
 
-                // 3. Mostrar la respuesta de tu modelo (o el resultado de la acción)
-                binding.transcriptionTextView.text = "$responseText\n[Acción: $predictedAction, Resultado: $executionResult]"
 
-                // 4. Hablar la respuesta de tu modelo
-                if (responseText.isNotEmpty()){
-                    textToSpeech.speak(responseText, TextToSpeech.QUEUE_FLUSH, null, null)
+                val geminiPrompt = when (predictedAction) {
+                    "abrir_camara" -> "El usuario quiere 'abrir_camara'. Da una respuesta natural confirmándolo."
+                    "abrir_mapa" -> "El usuario quiere 'abrir_mapa'. Da una respuesta natural confirmándolo."
+                    "UNKNOWN_ACTION" -> "El comando del usuario ('$prompt') no se reconoció. Pídele que lo repita de forma amable."
+                    else -> "El usuario ha dado el comando '$predictedAction'. Primero Saluda Cordialmente y Da una respuesta corta y natural confirmando la acción. y  pregutna que quieres hacer "
                 }
+                val geminiResponse = try {
+                    val response = generativeModel.generateContent(geminiPrompt)
+                    response.text ?: "No pude generar una respuesta conversacional."
+                } catch (e: Exception) {
+                    "Error en Gemini: No pude generar la respuesta. ${e.message}"
+                }
+                if (geminiResponse.isNotEmpty()){
+                    textToSpeech.speak(geminiResponse, TextToSpeech.QUEUE_FLUSH, null, null)
+                }
+                val executionResult = IntentHandler.handleIntent(this@JarActivity, predictedAction)
+
+                binding.transcriptionTextView.text =
+                    "$geminiResponse\n\n" +
+                            "[Acción ML: $predictedAction, Ejecución Local: $executionResult]"
 
             }catch (e: Exception){
-                // Error de red, JSON o conexión con tu servidor ngrok
+                // Error de red, JSON o conexión con tu servidor ngrok0
                 val errorMessage = "Error API (ngrok): ${e.message ?: "Verifica que el servidor esté activo y la URL correcta."}"
                 binding.transcriptionTextView.text = errorMessage
                 Toast.makeText(this@JarActivity, errorMessage, Toast.LENGTH_LONG ).show()
